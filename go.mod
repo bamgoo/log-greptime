@@ -4,9 +4,12 @@ go 1.25.3
 
 require (
 	github.com/GreptimeTeam/greptimedb-ingester-go v0.4.0
-	github.com/bamgoo/bamgoo v0.0.0
-	github.com/bamgoo/base v0.0.0
-	github.com/bamgoo/log v0.0.0
+	github.com/bamgoo/bamgoo v0.0.1
+
+	github.com/bamgoo/base v0.0.1
+
+	github.com/bamgoo/log v0.0.1
+
 )
 
 require (
@@ -24,12 +27,5 @@ require (
 	google.golang.org/protobuf v1.36.5 // indirect
 )
 
-replace github.com/bamgoo/bamgoo => ../bamgoo
-
-replace github.com/bamgoo/base => ../base
-
-replace github.com/bamgoo/log => ../log
-
-replace google.golang.org/grpc => google.golang.org/grpc v1.53.0
 
 exclude google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1
