@@ -2,6 +2,7 @@ package log_greptime
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ type (
 		instance *blog.Instance
 		client   *greptime.Client
 		setting  greptimeSetting
+		levels   map[blog.Level]string
 	}
 
 	greptimeSetting struct {
@@ -40,7 +42,7 @@ func init() {
 	bamgoo.Register("greptime", &greptimeDriver{})
 }
 
-func (d *greptimeDriver) Connect(inst *blog.Instance) (blog.Connect, error) {
+func (d *greptimeDriver) Connect(inst *blog.Instance) (blog.Connection, error) {
 	setting := greptimeSetting{
 		Host:     "127.0.0.1",
 		Port:     4001,
@@ -95,6 +97,7 @@ func (d *greptimeDriver) Connect(inst *blog.Instance) (blog.Connect, error) {
 	return &greptimeConnection{
 		instance: inst,
 		setting:  setting,
+		levels:   blog.Levels(),
 	}, nil
 }
 
@@ -114,45 +117,32 @@ func (c *greptimeConnection) Open() error {
 }
 
 func (c *greptimeConnection) Close() error {
+	// greptimedb-ingester-go v0.4.x has no client Close method.
+	// We only use non-stream writes, so releasing the reference is enough.
+	c.client = nil
 	return nil
 }
 
 func (c *greptimeConnection) Write(logs ...blog.Log) error {
-	if c.client == nil || len(logs) == 0 {
+	if c.client == nil || c.instance == nil || len(logs) == 0 {
 		return nil
 	}
-
-	tbl, err := table.New(c.setting.Table)
+	tbl, err := c.newTable()
 	if err != nil {
 		return err
 	}
-	_ = tbl.WithSanitate(false)
 
-	if err := tbl.AddTagColumn("instance", types.STRING); err != nil {
-		return err
-	}
-	if err := tbl.AddFieldColumn("level", types.STRING); err != nil {
-		return err
-	}
-	if err := tbl.AddFieldColumn("level_num", types.INT64); err != nil {
-		return err
-	}
-	if err := tbl.AddFieldColumn("body", types.STRING); err != nil {
-		return err
-	}
-	if err := tbl.AddTimestampColumn("ts", types.TIMESTAMP_MILLISECOND); err != nil {
-		return err
-	}
-
-	levelNames := blog.Levels()
 	for _, entry := range logs {
-		level := levelNames[entry.Level]
+		level := c.levels[entry.Level]
 		if level == "" {
 			level = "UNKNOWN"
 		}
 
 		if err := tbl.AddRow(
-			c.instance.Name,
+			c.instance.Config.Driver,
+			getFieldString(entry.Fields, "project"),
+			getFieldString(entry.Fields, "profile"),
+			getFieldString(entry.Fields, "node"),
 			level,
 			int64(entry.Level),
 			entry.Body,
@@ -167,6 +157,39 @@ func (c *greptimeConnection) Write(logs ...blog.Log) error {
 
 	_, err = c.client.Write(ctx, tbl)
 	return err
+}
+
+func (c *greptimeConnection) newTable() (*table.Table, error) {
+	tbl, err := table.New(c.setting.Table)
+	if err != nil {
+		return nil, err
+	}
+	_ = tbl.WithSanitate(false)
+	if err := tbl.AddTagColumn("driver", types.STRING); err != nil {
+		return nil, err
+	}
+	if err := tbl.AddTagColumn("project", types.STRING); err != nil {
+		return nil, err
+	}
+	if err := tbl.AddTagColumn("profile", types.STRING); err != nil {
+		return nil, err
+	}
+	if err := tbl.AddTagColumn("node", types.STRING); err != nil {
+		return nil, err
+	}
+	if err := tbl.AddFieldColumn("level", types.STRING); err != nil {
+		return nil, err
+	}
+	if err := tbl.AddFieldColumn("level_num", types.INT64); err != nil {
+		return nil, err
+	}
+	if err := tbl.AddFieldColumn("body", types.STRING); err != nil {
+		return nil, err
+	}
+	if err := tbl.AddTimestampColumn("ts", types.TIMESTAMP_MILLISECOND); err != nil {
+		return nil, err
+	}
+	return tbl, nil
 }
 
 func getString(m Map, key string) (string, bool) {
@@ -241,4 +264,14 @@ func getBool(m Map, key string) (bool, bool) {
 	}
 	v, ok := val.(bool)
 	return v, ok
+}
+
+func getFieldString(m Map, key string) string {
+	if m == nil {
+		return ""
+	}
+	if v, ok := m[key]; ok {
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+	return ""
 }
