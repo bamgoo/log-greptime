@@ -2,9 +2,10 @@ package log_greptime
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	greptime "github.com/GreptimeTeam/greptimedb-ingester-go"
@@ -24,6 +25,8 @@ type (
 		client   *greptime.Client
 		setting  greptimeSetting
 		levels   map[blog.Level]string
+		tsMutex  sync.Mutex
+		lastTsNs int64
 	}
 
 	greptimeSetting struct {
@@ -138,15 +141,17 @@ func (c *greptimeConnection) Write(logs ...blog.Log) error {
 			level = "UNKNOWN"
 		}
 
+		ts := c.uniqueTime(entry.Time)
+		fields := encodeFields(entry.Fields)
 		if err := tbl.AddRow(
-			c.instance.Config.Driver,
-			getFieldString(entry.Fields, "project"),
-			getFieldString(entry.Fields, "profile"),
-			getFieldString(entry.Fields, "node"),
+			entry.Project,
+			entry.Profile,
+			entry.Node,
 			level,
 			int64(entry.Level),
 			entry.Body,
-			entry.Time,
+			fields,
+			ts,
 		); err != nil {
 			return err
 		}
@@ -165,9 +170,6 @@ func (c *greptimeConnection) newTable() (*table.Table, error) {
 		return nil, err
 	}
 	_ = tbl.WithSanitate(false)
-	if err := tbl.AddTagColumn("driver", types.STRING); err != nil {
-		return nil, err
-	}
 	if err := tbl.AddTagColumn("project", types.STRING); err != nil {
 		return nil, err
 	}
@@ -180,13 +182,16 @@ func (c *greptimeConnection) newTable() (*table.Table, error) {
 	if err := tbl.AddFieldColumn("level", types.STRING); err != nil {
 		return nil, err
 	}
-	if err := tbl.AddFieldColumn("level_num", types.INT64); err != nil {
+	if err := tbl.AddFieldColumn("level_code", types.INT64); err != nil {
 		return nil, err
 	}
 	if err := tbl.AddFieldColumn("body", types.STRING); err != nil {
 		return nil, err
 	}
-	if err := tbl.AddTimestampColumn("ts", types.TIMESTAMP_MILLISECOND); err != nil {
+	if err := tbl.AddFieldColumn("fields", types.STRING); err != nil {
+		return nil, err
+	}
+	if err := tbl.AddTimestampColumn("time", types.TIMESTAMP_NANOSECOND); err != nil {
 		return nil, err
 	}
 	return tbl, nil
@@ -266,12 +271,24 @@ func getBool(m Map, key string) (bool, bool) {
 	return v, ok
 }
 
-func getFieldString(m Map, key string) string {
-	if m == nil {
-		return ""
+func (c *greptimeConnection) uniqueTime(t time.Time) time.Time {
+	ns := t.UnixNano()
+	c.tsMutex.Lock()
+	if ns <= c.lastTsNs {
+		ns = c.lastTsNs + 1
 	}
-	if v, ok := m[key]; ok {
-		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	c.lastTsNs = ns
+	c.tsMutex.Unlock()
+	return time.Unix(0, ns)
+}
+
+func encodeFields(m Map) string {
+	if len(m) == 0 {
+		return "{}"
 	}
-	return ""
+	bts, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(bts)
 }
