@@ -1,2 +1,2 @@
 # log-greptime
-bamgoo greptime log driver.
+infrago greptime log driver.

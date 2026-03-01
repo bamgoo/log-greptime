@@ -1,14 +1,14 @@
-module github.com/bamgoo/log-greptime
+module github.com/infrago/log-greptime
 
 go 1.25.3
 
 require (
 	github.com/GreptimeTeam/greptimedb-ingester-go v0.4.0
-	github.com/bamgoo/bamgoo v0.0.1
+	github.com/infrago/infra v0.0.1
 
-	github.com/bamgoo/base v0.0.1
+	github.com/infrago/base v0.0.1
 
-	github.com/bamgoo/log v0.0.1
+	github.com/infrago/log v0.0.1
 
 )
 

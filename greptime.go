@@ -12,9 +12,9 @@ import (
 	"github.com/GreptimeTeam/greptimedb-ingester-go/table"
 	"github.com/GreptimeTeam/greptimedb-ingester-go/table/types"
 
-	"github.com/bamgoo/bamgoo"
-	. "github.com/bamgoo/base"
-	blog "github.com/bamgoo/log"
+	"github.com/infrago/infra"
+	. "github.com/infrago/base"
+	blog "github.com/infrago/log"
 )
 
 type (
@@ -42,7 +42,7 @@ type (
 )
 
 func init() {
-	bamgoo.Register("greptime", &greptimeDriver{})
+	infra.Register("greptime", &greptimeDriver{})
 }
 
 func (d *greptimeDriver) Connect(inst *blog.Instance) (blog.Connection, error) {
