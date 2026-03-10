@@ -12,8 +12,8 @@ import (
 	"github.com/GreptimeTeam/greptimedb-ingester-go/table"
 	"github.com/GreptimeTeam/greptimedb-ingester-go/table/types"
 
-	"github.com/infrago/infra"
 	. "github.com/infrago/base"
+	"github.com/infrago/infra"
 	blog "github.com/infrago/log"
 )
 
@@ -145,6 +145,7 @@ func (c *greptimeConnection) Write(logs ...blog.Log) error {
 		fields := encodeFields(entry.Fields)
 		if err := tbl.AddRow(
 			entry.Project,
+			entry.Role,
 			entry.Profile,
 			entry.Node,
 			level,
@@ -171,6 +172,9 @@ func (c *greptimeConnection) newTable() (*table.Table, error) {
 	}
 	_ = tbl.WithSanitate(false)
 	if err := tbl.AddTagColumn("project", types.STRING); err != nil {
+		return nil, err
+	}
+	if err := tbl.AddTagColumn("role", types.STRING); err != nil {
 		return nil, err
 	}
 	if err := tbl.AddTagColumn("profile", types.STRING); err != nil {
