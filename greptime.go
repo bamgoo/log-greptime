@@ -3,6 +3,7 @@ package log_greptime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type (
 	greptimeDriver struct{}
 
 	greptimeConnection struct {
+		mutex    sync.RWMutex
 		instance *blog.Instance
 		client   *greptime.Client
 		setting  greptimeSetting
@@ -120,6 +122,9 @@ func (c *greptimeConnection) Open() error {
 }
 
 func (c *greptimeConnection) Close() error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	// greptimedb-ingester-go v0.4.x has no client Close method.
 	// We only use non-stream writes, so releasing the reference is enough.
 	c.client = nil
@@ -127,7 +132,12 @@ func (c *greptimeConnection) Close() error {
 }
 
 func (c *greptimeConnection) Write(logs ...blog.Log) error {
-	if c.client == nil || c.instance == nil || len(logs) == 0 {
+	c.mutex.RLock()
+	client := c.client
+	inst := c.instance
+	c.mutex.RUnlock()
+
+	if client == nil || inst == nil || len(logs) == 0 {
 		return nil
 	}
 	tbl, err := c.newTable()
@@ -161,7 +171,7 @@ func (c *greptimeConnection) Write(logs ...blog.Log) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.setting.Timeout)
 	defer cancel()
 
-	_, err = c.client.Write(ctx, tbl)
+	_, err = client.Write(ctx, tbl)
 	return err
 }
 
@@ -292,7 +302,20 @@ func encodeFields(m Map) string {
 	}
 	bts, err := json.Marshal(m)
 	if err != nil {
-		return "{}"
+		fallback := Map{
+			"_error": err.Error(),
+		}
+		for key, value := range m {
+			if _, e := json.Marshal(value); e == nil {
+				fallback[key] = value
+			} else {
+				fallback[key] = fmt.Sprint(value)
+			}
+		}
+		bts, err = json.Marshal(fallback)
+		if err != nil {
+			return `{"_error":"failed to encode fields"}`
+		}
 	}
 	return string(bts)
 }
