@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	gpb "github.com/GreptimeTeam/greptime-proto/go/greptime/v1"
 	greptime "github.com/GreptimeTeam/greptimedb-ingester-go"
 	"github.com/GreptimeTeam/greptimedb-ingester-go/table"
-	"github.com/GreptimeTeam/greptimedb-ingester-go/table/types"
 
 	. "github.com/infrago/base"
 	"github.com/infrago/infra"
@@ -27,6 +28,7 @@ type (
 		client   *greptime.Client
 		setting  greptimeSetting
 		levels   map[blog.Level]string
+		schema   []*gpb.ColumnSchema
 		tsMutex  sync.Mutex
 		lastTsNs int64
 	}
@@ -103,6 +105,7 @@ func (d *greptimeDriver) Connect(inst *blog.Instance) (blog.Connection, error) {
 		instance: inst,
 		setting:  setting,
 		levels:   blog.Levels(),
+		schema:   newLogSchema(),
 	}, nil
 }
 
@@ -144,16 +147,17 @@ func (c *greptimeConnection) Write(logs ...blog.Log) error {
 	if err != nil {
 		return err
 	}
-
+	var writeErr error
+	c.tsMutex.Lock()
 	for _, entry := range logs {
 		level := c.levels[entry.Level]
 		if level == "" {
 			level = "UNKNOWN"
 		}
 
-		ts := c.uniqueTime(entry.Time)
 		fields := encodeFields(entry.Fields)
-		if err := tbl.AddRow(
+		ts := c.uniqueTimeLocked(entry.Time)
+		if err = tbl.AddRow(
 			entry.Project,
 			entry.Role,
 			entry.Profile,
@@ -164,8 +168,13 @@ func (c *greptimeConnection) Write(logs ...blog.Log) error {
 			fields,
 			ts,
 		); err != nil {
-			return err
+			writeErr = err
+			break
 		}
+	}
+	c.tsMutex.Unlock()
+	if writeErr != nil {
+		return writeErr
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.setting.Timeout)
@@ -180,35 +189,26 @@ func (c *greptimeConnection) newTable() (*table.Table, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(c.schema) == 0 {
+		c.schema = newLogSchema()
+	}
 	_ = tbl.WithSanitate(false)
-	if err := tbl.AddTagColumn("project", types.STRING); err != nil {
-		return nil, err
-	}
-	if err := tbl.AddTagColumn("role", types.STRING); err != nil {
-		return nil, err
-	}
-	if err := tbl.AddTagColumn("profile", types.STRING); err != nil {
-		return nil, err
-	}
-	if err := tbl.AddTagColumn("node", types.STRING); err != nil {
-		return nil, err
-	}
-	if err := tbl.AddFieldColumn("level", types.STRING); err != nil {
-		return nil, err
-	}
-	if err := tbl.AddFieldColumn("level_code", types.INT64); err != nil {
-		return nil, err
-	}
-	if err := tbl.AddFieldColumn("body", types.STRING); err != nil {
-		return nil, err
-	}
-	if err := tbl.AddFieldColumn("fields", types.STRING); err != nil {
-		return nil, err
-	}
-	if err := tbl.AddTimestampColumn("time", types.TIMESTAMP_NANOSECOND); err != nil {
-		return nil, err
-	}
+	tbl.WithColumnsSchema(c.schema)
 	return tbl, nil
+}
+
+func newLogSchema() []*gpb.ColumnSchema {
+	return []*gpb.ColumnSchema{
+		{ColumnName: "project", SemanticType: gpb.SemanticType_TAG, Datatype: gpb.ColumnDataType_STRING},
+		{ColumnName: "role", SemanticType: gpb.SemanticType_TAG, Datatype: gpb.ColumnDataType_STRING},
+		{ColumnName: "profile", SemanticType: gpb.SemanticType_TAG, Datatype: gpb.ColumnDataType_STRING},
+		{ColumnName: "node", SemanticType: gpb.SemanticType_TAG, Datatype: gpb.ColumnDataType_STRING},
+		{ColumnName: "level", SemanticType: gpb.SemanticType_FIELD, Datatype: gpb.ColumnDataType_STRING},
+		{ColumnName: "level_code", SemanticType: gpb.SemanticType_FIELD, Datatype: gpb.ColumnDataType_INT64},
+		{ColumnName: "body", SemanticType: gpb.SemanticType_FIELD, Datatype: gpb.ColumnDataType_STRING},
+		{ColumnName: "fields", SemanticType: gpb.SemanticType_FIELD, Datatype: gpb.ColumnDataType_STRING},
+		{ColumnName: "time", SemanticType: gpb.SemanticType_TIMESTAMP, Datatype: gpb.ColumnDataType_TIMESTAMP_NANOSECOND},
+	}
 }
 
 func getString(m Map, key string) (string, bool) {
@@ -285,20 +285,26 @@ func getBool(m Map, key string) (bool, bool) {
 	return v, ok
 }
 
-func (c *greptimeConnection) uniqueTime(t time.Time) time.Time {
+func (c *greptimeConnection) uniqueTimeLocked(t time.Time) time.Time {
 	ns := t.UnixNano()
-	c.tsMutex.Lock()
 	if ns <= c.lastTsNs {
 		ns = c.lastTsNs + 1
 	}
 	c.lastTsNs = ns
-	c.tsMutex.Unlock()
 	return time.Unix(0, ns)
 }
 
+const emptyFieldsJSON = "{}"
+
 func encodeFields(m Map) string {
 	if len(m) == 0 {
-		return "{}"
+		return emptyFieldsJSON
+	}
+	if encoded, ok := preencodedJSON(m); ok {
+		return encoded
+	}
+	if encoded, ok := encodePrimitiveFields(m); ok {
+		return encoded
 	}
 	bts, err := json.Marshal(m)
 	if err != nil {
@@ -318,4 +324,93 @@ func encodeFields(m Map) string {
 		}
 	}
 	return string(bts)
+}
+
+func preencodedJSON(m Map) (string, bool) {
+	if len(m) != 1 {
+		return "", false
+	}
+	for key, value := range m {
+		if key != "_json" && key != "__json" {
+			return "", false
+		}
+		encoded, ok := value.(string)
+		if !ok || !json.Valid([]byte(encoded)) {
+			return "", false
+		}
+		return encoded, true
+	}
+	return "", false
+}
+
+func encodePrimitiveFields(m Map) (string, bool) {
+	keys := make([]string, 0, len(m))
+	for key, value := range m {
+		if !isPrimitiveJSONValue(value) {
+			return "", false
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	b.Grow(len(m) * 16)
+	b.WriteByte('{')
+	for idx, key := range keys {
+		if idx > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.Quote(key))
+		b.WriteByte(':')
+		writePrimitiveJSONValue(&b, m[key])
+	}
+	b.WriteByte('}')
+	return b.String(), true
+}
+
+func isPrimitiveJSONValue(value any) bool {
+	switch value.(type) {
+	case nil, string, bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return true
+	default:
+		return false
+	}
+}
+
+func writePrimitiveJSONValue(b *strings.Builder, value any) {
+	switch v := value.(type) {
+	case nil:
+		b.WriteString("null")
+	case string:
+		b.WriteString(strconv.Quote(v))
+	case bool:
+		b.WriteString(strconv.FormatBool(v))
+	case int:
+		b.WriteString(strconv.FormatInt(int64(v), 10))
+	case int8:
+		b.WriteString(strconv.FormatInt(int64(v), 10))
+	case int16:
+		b.WriteString(strconv.FormatInt(int64(v), 10))
+	case int32:
+		b.WriteString(strconv.FormatInt(int64(v), 10))
+	case int64:
+		b.WriteString(strconv.FormatInt(v, 10))
+	case uint:
+		b.WriteString(strconv.FormatUint(uint64(v), 10))
+	case uint8:
+		b.WriteString(strconv.FormatUint(uint64(v), 10))
+	case uint16:
+		b.WriteString(strconv.FormatUint(uint64(v), 10))
+	case uint32:
+		b.WriteString(strconv.FormatUint(uint64(v), 10))
+	case uint64:
+		b.WriteString(strconv.FormatUint(v, 10))
+	case float32:
+		b.WriteString(strconv.FormatFloat(float64(v), 'g', -1, 32))
+	case float64:
+		b.WriteString(strconv.FormatFloat(v, 'g', -1, 64))
+	}
 }

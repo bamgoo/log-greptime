@@ -3,6 +3,7 @@ module github.com/infrago/log-greptime
 go 1.25.3
 
 require (
+	github.com/GreptimeTeam/greptime-proto v0.4.3
 	github.com/GreptimeTeam/greptimedb-ingester-go v0.4.0
 	github.com/infrago/base v0.27.0
 	github.com/infrago/infra v0.27.0
@@ -10,10 +11,8 @@ require (
 )
 
 require (
-	github.com/GreptimeTeam/greptime-proto v0.4.3 // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	golang.org/x/net v0.42.0 // indirect
