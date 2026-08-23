@@ -68,7 +68,7 @@ func TestNewTableUsesCachedSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tbl.AddRow("project", "role", "profile", "node", "INFO", int64(blog.LevelInfo), "body", "{}", time.Now()); err != nil {
+	if err := tbl.AddRow("project", "role", "profile", "node", "module", "INFO", int64(blog.LevelInfo), "body", "request-id", "trace-id", "{}", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }
